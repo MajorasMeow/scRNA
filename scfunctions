@@ -1,0 +1,123 @@
+### functions for scRNA that make my life easier
+
+## magic imputation of seurat object. returns seurat object with default assay to magic assay
+FullMagic<-function(SEU_OBJECT){
+  library(Rmagic)
+  library(Seurat)
+  
+# removes non expressed genes
+  genecounts <- GetAssayData(SEU_OBJECT)
+  genenames<-rownames(genecounts)
+  genes_expressed <- rowSums(genecounts) > 0
+  SEU_OBJECT <- subset(SEU_OBJECT, features = genenames[genes_expressed])
+  
+# assigns default assay and returns object
+  assay_name <- DefaultAssay(SEU_OBJECT)
+  message(paste("Default assay is:", assay_name))
+  SEU_OBJECT<-magic(SEU_OBJECT)
+  DefaultAssay(SEU_OBJECT)<-paste0("MAGIC_", assay_name)
+  message(paste("Default assay is now:", DefaultAssay(SEU_OBJECT)))
+  return(SEU_OBJECT)
+}
+
+
+## extracts imputed data from seurat object. returns tibble.
+ImpData <- function(seu_object) {
+  assay_data <- DefaultAssay(seu_object)
+  expdata <- as_tibble(t(seu_object[[assay_data]]@data), .name_repair = "minimal")
+  return(expdata)
+}
+
+
+## use on ImpData return. takes metacolumn with conditions or clusters and extract cellnames of these to assign them to the tibble from ImpData. useful for plotting certain groups of cells by meta data
+AssignClusterLabels <- function(data, seu_object, metadata_column = "ident", specific_clusters = NULL) {
+  data$cellnames <- WhichCells(seu_object)
+  data[[metadata_column]] <- seu_object@meta.data[[metadata_column]]
+  if (!is.null(specific_clusters)){
+    specific_cells <- rownames(seu_object@meta.data)[seu_object@meta.data[[metadata_column]] %in% specific_clusters]
+    subset_data <- data[data$cellnames %in% specific_cells, ]
+  }
+  return(data)
+}
+
+## regression analysis using z-scores with parallel computing (set for windows) with 5 cores.
+analyze_gene_relationships_fast <- function(data, target_gene, adj_r2_threshold = 0.2) {
+  library(broom)
+  library(purrr)
+  library(furrr)
+  library(progressr)
+  handlers(global = T)  
+  plan("multisession", workers = 5) # sets to desired cores
+
+  # z-scoring that drops constant genes. eg genes that are all 0
+  zscore <- function(df) {
+    df %>%
+      select(where(~ sd(.) > 0)) %>%
+      mutate(across(everything(), ~ (.-mean(.)) / sd(.)))
+  }
+  
+  # check if target gene is right (likely when misspelled)
+  if (!target_gene %in% colnames(data)) {
+    stop("Target gene not found in data. Did you spell it righ?")
+  }
+  
+  message("Running combined regression scan...")
+  
+  # we dont need to compute regression with target itself so we setdiff
+  test_genes <- setdiff(colnames(data), target_gene)
+  
+  # parallel compute regression
+  result <- with_progress({
+    p <- progressor(along = test_genes)
+    
+    future_map_dfr(test_genes, function(gene) {
+      library(broom)
+      p()
+      
+      results <- list()
+      
+      for (mode in c("none", "sqrt")) {
+        expr <- data[[gene]]
+        
+        # transformation for genes that are non linear correlated
+        if (mode == "sqrt") expr <- sqrt(expr)
+      
+        df_sub <- tibble(
+          x = data[[target_gene]],
+          y = expr
+        )
+        # variance checking here
+        if (sd(df_sub$y) == 0 || sd(df_sub$x) == 0) next
+        
+        # z-score
+        df_sub <- df_sub %>%
+          mutate(x = (x - mean(x)) / sd(x),
+                 y = (y - mean(y)) / sd(y))
+        
+        # fitting the model here
+        fit <- lm(y ~ x, data = df_sub)
+        stats <- glance(fit)
+        coef_val <- coef(fit)[["x"]]
+        
+        results[[mode]] <- tibble(
+          gene = gene,
+          adj_r_squared = stats$adj.r.squared,
+          p_value = stats$p.value,
+          slope = coef_val,
+          transformation = mode
+        )
+      }
+      
+      # choose best model by adjusted R² and decides for best model
+      if (length(results) == 0) return(NULL)
+      
+      bind_rows(results) %>%
+        arrange(desc(adj_r_squared)) %>%
+        slice(1)
+    })
+  })
+  
+  result %>%
+    filter(adj_r_squared >= adj_r2_threshold) %>%
+    arrange(desc(adj_r_squared))
+}
