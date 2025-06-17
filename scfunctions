@@ -121,3 +121,14 @@ analyze_gene_relationships_fast <- function(data, target_gene, adj_r2_threshold 
     filter(adj_r_squared >= adj_r2_threshold) %>%
     arrange(desc(adj_r_squared))
 }
+
+
+## make your dataset smaller by random subsetting
+give_random_subset <- function(object, by_factor, randomness.seed = NULL, ...){
+  numcells <- nrow(object@meta.data)
+  subsample <- round(numcells * by_factor)
+  set.seed(randomness.seed)
+  selected.cells <- sample(colnames(object), subsample)
+  object <- subset(object, cells =  selected.cells, ...)
+  return(object)
+}
