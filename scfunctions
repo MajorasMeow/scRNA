@@ -41,14 +41,14 @@ AssignClusterLabels <- function(data, seu_object, metadata_column = "ident", spe
 }
 
 ## regression analysis using z-scores with parallel computing (set for windows) with 5 cores.
-analyze_gene_relationships_fast <- function(data, target_gene, adj_r2_threshold = 0.2) {
+linreg_genes <- function(data, target_gene, adj_r2_threshold = 0, workers = 5) {
   library(broom)
   library(purrr)
   library(furrr)
   library(progressr)
   handlers(global = T)  
-  plan("multisession", workers = 5) # sets to desired cores
-
+  plan("multisession", workers = workers) # sets to desired cores
+  
   # z-scoring that drops constant genes. eg genes that are all 0
   zscore <- function(df) {
     df %>%
@@ -81,7 +81,7 @@ analyze_gene_relationships_fast <- function(data, target_gene, adj_r2_threshold 
         
         # transformation for genes that are non linear correlated
         if (mode == "sqrt") expr <- sqrt(expr)
-      
+        
         df_sub <- tibble(
           x = data[[target_gene]],
           y = expr
@@ -120,15 +120,4 @@ analyze_gene_relationships_fast <- function(data, target_gene, adj_r2_threshold 
   result %>%
     filter(adj_r_squared >= adj_r2_threshold) %>%
     arrange(desc(adj_r_squared))
-}
-
-
-## make your dataset smaller by random subsetting
-give_random_subset <- function(object, by_factor, randomness.seed = NULL, ...){
-  numcells <- nrow(object@meta.data)
-  subsample <- round(numcells * by_factor)
-  set.seed(randomness.seed)
-  selected.cells <- sample(colnames(object), subsample)
-  object <- subset(object, cells =  selected.cells, ...)
-  return(object)
 }
